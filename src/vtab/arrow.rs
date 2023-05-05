@@ -481,13 +481,17 @@ pub fn arrow_ffi_to_query_params(array: FFI_ArrowArray, schema: FFI_ArrowSchema)
 
 #[cfg(test)]
 mod test {
-    use super::{arrow_recordbatch_to_query_params, ArrowVTab};
-    use crate::{Connection, Result};
+    use super::{arrow_recordbatch_to_query_params, record_batch_to_duckdb_data_chunk, ArrowVTab};
+    use crate::{
+        vtab::{DataChunk, LogicalType, LogicalTypeId},
+        Connection, Result,
+    };
     use arrow::{
-        array::{Float64Array, Int32Array},
+        array::{Float64Array, Int32Array, Int32Builder},
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     };
+    use libduckdb_sys::duckdb_vector_get_validity;
     use std::{error::Error, sync::Arc};
 
     #[test]
@@ -507,6 +511,35 @@ mod test {
         let column = rb.column(0).as_any().downcast_ref::<Float64Array>().unwrap();
         assert_eq!(column.len(), 1);
         assert_eq!(column.value(0), 300.0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_null_copy() -> Result<(), Box<dyn Error>> {
+        // Create the arrow record batch.
+        let mut arrow_i32_builder = Int32Builder::new();
+        arrow_i32_builder.append_null();
+
+        let arrow_i32_array = arrow_i32_builder.finish();
+
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, true)]);
+        let batch = RecordBatch::try_new(schema.into(), vec![Arc::new(arrow_i32_array)])?;
+
+        // Create the duckdb record batch.
+        let logical_types = vec![LogicalType::new(LogicalTypeId::Integer)];
+        let mut duckdb_chunk = DataChunk::new(&logical_types[..]);
+
+        // Copy the arrow record batch into the duckdb record batch.
+        record_batch_to_duckdb_data_chunk(&batch, &mut duckdb_chunk)?;
+
+        let flat_vector = duckdb_chunk.flat_vector(0);
+
+        unsafe {
+            let validity = duckdb_vector_get_validity(flat_vector.as_mut_ptr());
+
+            assert!(validity.is_null());
+        }
+
         Ok(())
     }
 
